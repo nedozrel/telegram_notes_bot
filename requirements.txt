@@ -1,1 +1,1 @@
-aiogram~=2.22.1
+Telethon~=1.25.0
