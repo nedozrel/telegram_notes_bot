@@ -1,3 +1,4 @@
+import requests
 from telethon import TelegramClient, events, sync
 from telethon.tl.custom import Button
 
@@ -31,12 +32,26 @@ async def start(event):
 		'Это бот для заметок пользователям телеграм.',
 		buttons=make_note_btn
 	)
-	# TODO: Saving user to the db
+	user = event.sender
+	user_dict = {
+		'telegram_id': user.id,
+		'first_name': user.first_name,
+		'last_name': user.last_name,
+		'username': user.username,
+		'phone': user.phone,
+		'photo': user.photo.photo_id if user.photo else None
+	}
+	try:
+		requests.post('http://127.0.0.1:8000/api/create-profile', json=user_dict)
+	except:
+		pass
 	raise events.StopPropagation
 
 
 @bot.on(events.NewMessage())
 async def create_note_fsm(event):
+	sender = event.sender
+	print(sender)
 	who = event.sender_id
 	msg = event.message
 	state = conversation_state.get(who)
@@ -71,9 +86,40 @@ async def create_note_fsm(event):
 
 	elif state == State.WAIT_NOTE_TEXT:
 		note_text = msg.raw_text
-		note_info_tmp_dict[who]['note_text'] = note_text
-		await create_note_on_server(who)
-		await event.respond('Записка успешно добавлена.')
+		note_getter = note_info_tmp_dict[who]['note_getter']
+		print(note_info_tmp_dict)
+		data = {
+			'note_sender': {
+				'telegram_id': sender.id,
+				'first_name': sender.first_name,
+				'last_name': sender.last_name,
+				'username': sender.username,
+				'phone': sender.phone,
+				'photo': sender.photo.photo_id if sender.photo else None
+			},
+			'note_getter': {
+				'telegram_id': note_getter.id,
+				'first_name': note_getter.first_name,
+				'last_name': note_getter.last_name,
+				'username': note_getter.username,
+				'phone': note_getter.phone,
+				'photo': note_getter.photo.photo_id if note_getter.photo else None
+			},
+			'text': note_text
+		}
+		try:
+			requests.post('http://127.0.0.1:8000/api/create-note', json=data)
+			await bot.send_message(
+				event.chat_id,
+				'Записка успешно добавлена. (но пока что посмотреть ее нельзя)',
+				buttons=make_note_btn
+			)
+		except:
+			await bot.send_message(
+				event.chat_id,
+				'Что то пошло не так :(',
+				buttons=make_note_btn
+			)
 		del note_info_tmp_dict[who]
 		del conversation_state[who]
 
@@ -92,11 +138,6 @@ async def get_user_by_msg(msg):
 		except ValueError:
 			pass
 	return user
-
-
-async def create_note_on_server(sender):
-	# TODO: create note API call
-	pass
 
 
 if __name__ == '__main__':
