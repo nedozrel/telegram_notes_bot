@@ -1,8 +1,11 @@
 import requests
 from telethon import TelegramClient, events, sync
 from telethon.tl.custom import Button
+from dateutil import parser
 
 import os
+import json
+
 from enum import Enum, auto
 
 # TODO: Switch request to async lib
@@ -56,10 +59,41 @@ async def start(event):
 	raise events.StopPropagation
 
 
+async def cb_filter(event):
+	data = json.loads(event.data)
+	if not data:
+		return False
+	if 'view_notes_friend' in data.keys():
+		return True
+	return False
+
+
+@bot.on(events.CallbackQuery(func=cb_filter))
+async def callback(event):
+	data = json.loads(event.data)
+	friend_tg_id = data.get('view_notes_friend').get('tg_id')
+	r = requests.get(f'http://127.0.0.1:8000/api/notes/{event.sender.id}/', params={'sent_to': friend_tg_id})
+	if r.status_code == 200:
+		notes = r.json()
+	else:
+		await event.respond('Какая то ошибка на сервере :(')
+		raise events.StopPropagation
+	note_str_list = []
+	for note in notes:
+		time_str = parser.parse(note.get('created')).strftime('%d.%m.%y %H:%M%S')
+		note_str = f'```{time_str}```\n{note.get("text")}'
+		note_str_list.append(note_str)
+	msg = '\n----------------------\n'.join(note_str_list)
+	await event.respond(
+		msg,
+		buttons=start_kb
+	)
+	raise events.StopPropagation
+
+
 @bot.on(events.CallbackQuery())
 async def callback(event):
 	sender = event.sender
-	query = event.query
 	state = notes_view_state.get(sender.id)
 	if not state:
 		raise events.StopPropagation
@@ -73,9 +107,7 @@ async def callback(event):
 		state['current_note'] -= 1
 
 	crt_note_data = state["notes"][state["current_note"]]
-	await bot.edit_message(
-		event.chat_id,
-		query.msg_id,
+	await event.edit(
 		f'{crt_note_data["text"]}\n\n'
 		f'Кому: @{crt_note_data["note_getter"]["username"]}',
 		buttons=[Button.inline('⬅️ Назад', 'notes_back'), Button.inline('Вперед ➡️', 'notes_forward')]
@@ -85,31 +117,27 @@ async def callback(event):
 
 @bot.on(events.NewMessage(pattern='Мои записки'))
 async def view_notes(event):
-	sender = event.sender
-	who = event.sender_id
-	r = requests.get(f'http://127.0.0.1:8000/api/notes/{sender.id}')
-	data = r.json()
-	notes = data.get('notes')
-
-	if notes:
-		notes_view_state[who] = {
-			'notes': notes,
-			'current_note': 0,
-		}
-		state = notes_view_state[sender.id]
-		crt_note_data = state["notes"][state["current_note"]]
-		await bot.send_message(
-			event.chat_id,
-			f'{crt_note_data["text"]}\n\n'
-			f'Кому: @{crt_note_data["note_getter"]["username"]}',
-			buttons=[Button.inline('⬅️ Назад', 'notes_back'), Button.inline('Вперед ➡️', 'notes_forward')]
-		)
+	r = requests.get(f'http://127.0.0.1:8000/api/friends/{event.sender.id}/')
+	if r.status_code == 200:
+		friends = r.json()
 	else:
-		await bot.send_message(
-			event.chat_id,
-			'У вас пока нет записок.'
-		)
-	raise events.StopPropagation
+		await event.respond('Какая то ошибка на сервере :(')
+		raise events.StopPropagation
+
+	if not friends:
+		await event.respond('У вас пока нет записок.')
+		raise events.StopPropagation
+
+	buttons = []
+	for i in friends:
+		cb_data = json.dumps({
+			'view_notes_friend': {'tg_id': i.get('telegram_id')}
+		})
+		buttons.append([Button.inline(f'{i.get("username")}', cb_data)])
+	await event.respond(
+		'Выберите пользователя, которому была оставлена заметка.',
+		buttons=buttons
+	)
 
 
 @bot.on(events.NewMessage())
@@ -120,8 +148,11 @@ async def create_note_fsm(event):
 	state = conversation_state.get(who)
 
 	if msg.raw_text == "Отмена":
-		del note_info_tmp_dict[who]
-		del conversation_state[who]
+		try:
+			del note_info_tmp_dict[who]
+			del conversation_state[who]
+		except KeyError:
+			pass
 		await start(event)
 
 	if state is None:
